@@ -20,6 +20,8 @@ defmodule Docker do
   Otherwise returns true and Docker should be ready for use.
   """
   def ready? do
+    {:ok, _} = HTTPoison.start()
+
     case cmd("info", []) do
       {_, 0} -> true
       _ -> false
@@ -67,7 +69,14 @@ defmodule Docker do
   end
 
   def run!(options, image, command, args) do
-    cmd!("run", options ++ [image, command] ++ args)
+    body = Poison.encode!(%{"Image" => image, "Cmd" => [command | args], "ExposedPorts" => %{"22/tcp" => %{}}, "HostConfig" => %{"PublishAllPorts" => true, "AutoRemove" => true}})
+    {:ok, response} = req(:post, "https://192.168.99.100:2376/v1.29/containers/create", body)
+    %{"Id" => id} = Poison.decode!(response.body)
+
+    body = Poison.encode!(%{})
+    {:ok, _} = req(:post, "https://192.168.99.100:2376/v1.29/containers/#{id}/start", body)
+
+    id
   end
 
   @doc """
@@ -76,7 +85,23 @@ defmodule Docker do
   Returns the command output.
   """
   def exec!(options \\ [], container, command, args \\ []) do
-    cmd!("exec", options ++ [container, command] ++ args)
+    body = Poison.encode!(%{"Cmd" => [command | args]})
+    {:ok, response} = req(:post, "https://192.168.99.100:2376/v1.29/containers/#{container}/exec", body)
+    %{"Id" => id} = Poison.decode!(response.body)
+
+    body = Poison.encode!(%{})
+    {:ok, response} = req(:post, "https://192.168.99.100:2376/v1.29/exec/#{id}/start", body)
+  end
+
+  defp req(method, url, body) do
+    headers = [{"Content-Type", "application/json"}]
+
+    options = [ssl: [
+      certfile: "/Users/pmeinhardt/.docker/machine/certs/cert.pem",
+      keyfile: "/Users/pmeinhardt/.docker/machine/certs/key.pem",
+      cacertfile: "/Users/pmeinhardt/.docker/machine/certs/ca.pem"]]
+
+    HTTPoison.request(method, url, body, headers, options)
   end
 
   @doc """
@@ -85,9 +110,7 @@ defmodule Docker do
   Returns a list of the killed containers' IDs.
   """
   def kill!(options \\ [], containers) do
-    "kill"
-    |> cmd!(options ++ List.wrap(containers))
-    |> String.split("\n")
+    Enum.map(containers, fn id -> req(:post, "https://192.168.99.100:2376/v1.29/containers/#{id}/kill", "") end)
   end
 
   @doc """
